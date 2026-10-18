@@ -89,4 +89,64 @@ including natural weekly seasonality.
 
 ## Deviations
 
-(none yet)
+### 2026-10-19: choices the plan left open, fixed while building the harness
+
+These were made before any detection-power number was computed. The March run
+that smoke-tested the harness was checked for completeness and row sanity only.
+Code: `src/skewguard/inject.py`, `scripts/eval_harness.py`.
+
+1. **TTL and freshness (differs from a literal `Policy()`).** The feature view's
+   TTL is 1 day. Detectors 3 and 4 both set `max_staleness` to the TTL, because
+   `Policy()` turns the freshness check off and the stale-source fault is graded in
+   TTL units. Both get the same setting, so the 3-vs-4 comparison is unaffected.
+2. **Detector 3** uses PSI 0.25 on the three numeric features and L-inf 0.1 on the
+   two categorical ones (a per-feature `PolicySet`), since `Policy` has a single
+   `fixed_threshold`. **Detector 2** compares Feast's stored `null_rate` of the
+   window and the baseline, per feature.
+3. **Windows.** A day's window is a uniform sample, without replacement, of that
+   day's trips, seeded per (day, size). Every fault on that day starts from the
+   same sample. Feast computes it with `compute_metrics(start_date=day,
+   end_date=day, granularity="daily")`, which covers 00:00:00 to 23:59:59 UTC.
+   Detectors run as of the following midnight. TLC pickup times are naive local
+   times and are treated as UTC.
+4. **Baseline.** All 5,972,131 trips with pickup between 2024-01-01 and 2024-02-29
+   in the January and February files, not sub-sampled. `compute_baseline` runs once,
+   on a source holding only those rows.
+5. **Injected days.** For each fault, 30 onset days are drawn once (seed 20261018,
+   combined with the fault's index) and reused for every severity and window size,
+   so severity and window-size comparisons are paired. A fault that targets one
+   feature picks it at random for each incident: unit change, gradual shift and
+   type change among the numeric features; new category among the categorical
+   ones; null burst among all five.
+6. **Onset and duration.**
+   - Unit change, null burst, new category, timezone shift and type change start at
+     00:00 UTC on the injected day and are evaluated on that day. The shares apply
+     to that day's rows and are drawn from non-null values. New category recodes
+     the chosen rows to one unseen value, `__new__`. Timezone shift moves event
+     timestamps forward, so events pushed past 23:59:59 leave the day's window.
+   - Gradual shift starts at 00:00 UTC on the onset day and grows continuously: an
+     event *t* days after onset moves by rate x baseline `stddev` x *t*. It is
+     followed for 14 days, cut off at the end of the range, and time to detect is
+     the first `day_offset` with an alert.
+   - Stale source drops every event from a random second of the onset day until
+     k x TTL later (k = 1, 3, 7), with no backfill. Every day that overlaps the
+     outage is evaluated (2, 4 or 8 days), cut off at the end of the range.
+7. **Type change storage.** A parquet column holds one type, so a numeric column
+   with any stringified value is written as a string column. Feast's dask
+   backend casts the column to float before computing numeric metrics.
+8. **Tuning outputs.** Each result row keeps every check's value and threshold, so
+   `max_unseen_mass` can be re-thresholded from March rows. A different `min_rows`
+   needs a re-run (`--min-rows`), because skipped checks store no value.
+9. **Freshness stamps follow `feast monitor run`.** This was found by code review
+   before any detection numbers existed. `compute_metrics` stamps a window with
+   the newest event inside it, or with `None` when the window is empty
+   (`monitoring_service.py:47-61`, `1038-1042`). So the freshness age could never
+   exceed one day, and stale source would have been undetectable by construction.
+   The scheduled `auto_compute` stamps every window with the source's overall
+   MAX(event_timestamp) instead (`monitoring_service.py:154`, `206`). The harness
+   emulates that. After Feast computes a window, every row's `max_event_timestamp`
+   is set to the newest event the source holds by the end of that day: the clean
+   sample of the day before the onset day, then what the fault left of each
+   evaluated day. Feast's own stamp is kept as `feast_newest_event`. This
+   changes nothing on a day that has events. A first March smoke run made before
+   the fix was stopped and discarded.

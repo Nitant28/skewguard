@@ -1,7 +1,7 @@
 <!--
 DRAFT comment for https://github.com/feast-dev/feast/issues/6341
 ("Built-in feature drift detection with alerting"; open, unassigned as of 2026-10-18).
-Not posted. Post only after the skewguard repo is public, and replace <repo-url>.
+Not posted. Post only after https://github.com/Nitant28/skewguard is pushed and public.
 Keep it about evidence and design; don't ask to be assigned in the first comment.
 -->
 
@@ -41,7 +41,7 @@ Two smaller things I found along the way:
 - The histogram format differs between backends for constant columns (filed
   separately as #<issue>).
 
-Prototype with tests and the reproduction scripts: <repo-url>. It reads metrics
+Prototype with tests and the reproduction scripts: https://github.com/Nitant28/skewguard. It reads metrics
 only through `MonitoringService`, so it could become a module under
 `feast/monitoring/` or stay external. Which direction would maintainers prefer?
 I'm happy to write a short design doc first.

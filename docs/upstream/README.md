@@ -33,7 +33,7 @@ Opening the PR (Feast requires DCO sign-off and conventional-commit titles):
 cd feast-src
 git commit -s -m "fix: Store constant-column monitoring histograms consistently across backends"
 # fork feast-dev/feast on GitHub, then:
-git remote add fork https://github.com/<you>/feast.git
+git remote add fork https://github.com/Nitant28/feast.git
 git push fork fix/monitoring-constant-histogram
 ```
 

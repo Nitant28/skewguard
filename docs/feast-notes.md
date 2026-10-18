@@ -114,6 +114,22 @@ all 5 demo drivers were 72.7 h old against a 24 h TTL, and every one came back `
 (open since 2026-10-13). Don't duplicate it. Useful public work instead: test #7002
 with this reproduction and post the latency overhead measured with and without the fix.
 
+**F8. Freshness depends on how the metrics were computed.** The two paths stamp
+`max_event_timestamp` differently:
+- `feast monitor run` with no dates (`auto_compute`) stamps every window with the
+  source's overall newest event (`monitoring_service.py:154`, `190-207`). When the
+  source stalls, that timestamp stops moving, so "now minus newest event" grows past
+  the TTL and a freshness check fires.
+- With explicit dates (`compute_metrics`), each window gets the newest event *inside
+  that window* (`_newest_event_in_window`, lines 47-60, used at 1038-1042), or `None`
+  when the window is empty.
+
+So with explicit daily windows, freshness can never look older than one window, and
+during a full stall the signal disappears entirely. → Freshness checks should read
+metrics from `auto_compute`, or track the newest event themselves. Code review of
+the week-2 evaluation harness found that it hit exactly this, before any detection
+numbers existed.
+
 ## 4. Retrieval paths (needed to reason about skew)
 
 **`FeatureStore.get_historical_features`** (`feature_store.py:1988`) → `PassthroughProvider`

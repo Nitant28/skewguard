@@ -55,7 +55,7 @@ The script calls the same private helpers as
 `tests/unit/monitoring/test_compute_correctness.py`:
 `MetricsCalculator.compute_numeric`, `_dask_compute_numeric_metrics` and
 `_duckdb_numeric_stats`.
-<!-- link: https://github.com/<you>/skewguard/blob/main/scripts/repro_backend_histograms.py -->
+Script: https://github.com/Nitant28/skewguard/blob/main/scripts/repro_backend_histograms.py
 
 ### Specifications
 
