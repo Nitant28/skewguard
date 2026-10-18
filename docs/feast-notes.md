@@ -55,7 +55,7 @@ and PSI > 0.2 (the threshold proposed in a #6341 comment) fires on 23%. At 1,000
 the clean-data p95 is 0.047 or lower, so neither threshold ever fires and both are far
 above the noise. → `thresholds.numeric_null` simulates the no-drift distribution for
 the actual window size. Its false-positive rate, averaged over 50 baselines, was
-1.2% / 1.0% / 1.2% / 0.5% at 116 / 125 / 1,000 / 5,000 rows against a 1% target.
+1.0% / 1.1% / 1.1% / 0.4% at 116 / 125 / 1,000 / 5,000 rows against a 1% target.
 
 **F3. Backends disagree on constant columns.** For a column where min == max:
 - DuckDB, Postgres and other SQL backends return `{"bins": [v, v], "counts": [n]}`
@@ -65,7 +65,24 @@ the actual window size. Its false-positive rate, averaged over 50 baselines, was
 
 The same data therefore gives different histogram shapes depending on the offline
 store. → `rebin` treats a zero-width bin as a point mass, and `thresholds.feast_histogram`
-mimics both conventions. **This is a possible upstream issue.**
+mimics both conventions.
+
+The backends also disagree on values that sit exactly on an interior edge. DuckDB
+uses `FLOOR((x - min) / bin_width) + 1`, and `33 / 2.2` evaluates to
+`14.999999999999998`, so 33 lands in bin 14. numpy corrects its index against
+`linspace` edges and puts 33 in bin 15. Over integer columns `0..hi` with
+`hi = 1..199`, DuckDB and dask counts differed in 5 of 199 datasets.
+
+Both cases are reproduced in `scripts/repro_backend_histograms.py`. Feast's own
+`TestCrossBackendConsistency` compares means, null rates and top categories, but
+never histograms. The upstream issue draft and a tested patch for the constant
+case are in [upstream/](upstream/README.md).
+
+**Unused UI code:** `ui/src/pages/monitoring/components/HistogramChart.tsx:145-148`
+can overlay a baseline by drawing `baseline.counts[i]` on top of window bar `i`.
+That's wrong once edges differ (F1), and it compares raw counts rather than
+proportions. In v0.67.0 nothing passes `baseline` to the chart, so it is not a live
+bug. Anyone who wires the overlay up needs to rebin first.
 
 **F4. The baseline contains the window.** The baseline covers all history, including
 the most recent days that the daily window also covers. Baseline and window are

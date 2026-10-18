@@ -9,7 +9,7 @@ dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
 feast = ["feast==0.67.0"]
-dev = ["pytest>=8", "hypothesis>=6.100", "ruff>=0.6", "pyyaml>=6"]
+dev = ["pytest>=8", "hypothesis>=6.100", "ruff>=0.6", "pyyaml>=6", "scipy>=1.10"]
 
 [project.scripts]
 skewguard = "skewguard.cli:main"

@@ -1,0 +1,204 @@
+diff --git a/docs/how-to-guides/feature-monitoring.md b/docs/how-to-guides/feature-monitoring.md
+index 5e2f8b9..406ef42 100644
+--- a/docs/how-to-guides/feature-monitoring.md
++++ b/docs/how-to-guides/feature-monitoring.md
+@@ -243,6 +243,8 @@ GET /monitoring/metrics/features?project=my_project&feature_view_name=driver_sta
+ ]
+ ```
+ 
++Histogram edges span each window's own `min_val`..`max_val`, so edges differ between windows. A constant feature (`min_val == max_val`) is stored as a single zero-width bin on every backend: `{"bins": [v, v], "counts": [n], "bin_width": 0.0}`.
++
+ The UI **Freshness** column uses `max_event_timestamp` — `MAX(event_timestamp)` from the source — not `metric_date` (the DQM window start). Age is `now − max_event_timestamp`.
+ 
+ ### Per-feature-view aggregates
+diff --git a/sdk/python/feast/infra/offline_stores/dask.py b/sdk/python/feast/infra/offline_stores/dask.py
+index 05c7235..cb79314 100644
+--- a/sdk/python/feast/infra/offline_stores/dask.py
++++ b/sdk/python/feast/infra/offline_stores/dask.py
+@@ -7,7 +7,6 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple, Uni
+ 
+ import dask
+ import dask.dataframe as dd
+-import numpy as np
+ import pandas as pd
+ import pyarrow
+ import pyarrow.compute as pc
+@@ -43,6 +42,7 @@ from feast.monitoring.monitoring_utils import (
+     MONITORING_TIMESTAMP_FIELDS,
+     monitoring_parquet_meta,
+     normalize_monitoring_row,
++    numeric_histogram,
+     opt_float,
+ )
+ from feast.on_demand_feature_view import OnDemandFeatureView
+@@ -852,13 +852,7 @@ def _dask_compute_numeric_metrics(
+     result["p95"] = q_values[3]
+     result["p99"] = q_values[4]
+ 
+-    np_array = float_array.to_numpy()
+-    counts, bin_edges = np.histogram(np_array, bins=histogram_bins)
+-    result["histogram"] = {
+-        "bins": bin_edges.tolist(),
+-        "counts": counts.tolist(),
+-        "bin_width": float(bin_edges[1] - bin_edges[0]) if len(bin_edges) > 1 else 0,
+-    }
++    result["histogram"] = numeric_histogram(float_array.to_numpy(), histogram_bins)
+ 
+     return result
+ 
+diff --git a/sdk/python/feast/monitoring/metrics_calculator.py b/sdk/python/feast/monitoring/metrics_calculator.py
+index 1b8b3b3..e3dca30 100644
+--- a/sdk/python/feast/monitoring/metrics_calculator.py
++++ b/sdk/python/feast/monitoring/metrics_calculator.py
+@@ -2,10 +2,10 @@ import logging
+ import math
+ from typing import Dict, List, Optional, Tuple
+ 
+-import numpy as np
+ import pyarrow as pa
+ import pyarrow.compute as pc
+ 
++from feast.monitoring.monitoring_utils import numeric_histogram
+ from feast.types import PrimitiveFeastType
+ 
+ logger = logging.getLogger(__name__)
+@@ -110,15 +110,9 @@ class MetricsCalculator:
+         result["p95"] = q_values[3]
+         result["p99"] = q_values[4]
+ 
+-        np_array = float_array.to_numpy()
+-        counts, bin_edges = np.histogram(np_array, bins=self.histogram_bins)
+-        result["histogram"] = {
+-            "bins": bin_edges.tolist(),
+-            "counts": counts.tolist(),
+-            "bin_width": float(bin_edges[1] - bin_edges[0])
+-            if len(bin_edges) > 1
+-            else 0,
+-        }
++        result["histogram"] = numeric_histogram(
++            float_array.to_numpy(), self.histogram_bins
++        )
+ 
+         return result
+ 
+diff --git a/sdk/python/feast/monitoring/monitoring_utils.py b/sdk/python/feast/monitoring/monitoring_utils.py
+index 2b4bc2d..b423561 100644
+--- a/sdk/python/feast/monitoring/monitoring_utils.py
++++ b/sdk/python/feast/monitoring/monitoring_utils.py
+@@ -10,6 +10,8 @@ import math
+ from datetime import date, datetime
+ from typing import Any, Dict, List, Optional, Tuple
+ 
++import numpy as np
++
+ # ------------------------------------------------------------------ #
+ #  Table / file names
+ # ------------------------------------------------------------------ #
+@@ -196,6 +198,24 @@ def opt_float(val: Any) -> Optional[float]:
+     return f
+ 
+ 
++def numeric_histogram(values: np.ndarray, bins: int) -> Dict[str, Any]:
++    """Build the histogram dict for non-null numeric values.
++
++    A constant column becomes a single zero-width bin ``[v, v]`` holding every
++    value, the same shape the SQL backends (DuckDB, Postgres, Snowflake, ...)
++    store, instead of numpy's ``bins`` bins spread over ``[v - 0.5, v + 0.5]``.
++    """
++    lo, hi = float(values.min()), float(values.max())
++    if lo == hi:
++        return {"bins": [lo, hi], "counts": [int(len(values))], "bin_width": 0.0}
++    counts, bin_edges = np.histogram(values, bins=bins)
++    return {
++        "bins": bin_edges.tolist(),
++        "counts": counts.tolist(),
++        "bin_width": float(bin_edges[1] - bin_edges[0]),
++    }
++
++
+ def empty_numeric_metric(feature_name: str) -> Dict[str, Any]:
+     """Return a metric dict with all-None stats for a numeric feature."""
+     return {
+diff --git a/sdk/python/tests/unit/monitoring/test_compute_correctness.py b/sdk/python/tests/unit/monitoring/test_compute_correctness.py
+index acd3e8e..ed68b41 100644
+--- a/sdk/python/tests/unit/monitoring/test_compute_correctness.py
++++ b/sdk/python/tests/unit/monitoring/test_compute_correctness.py
+@@ -458,6 +458,11 @@ class TestDaskComputeCorrectness:
+         assert result["min_val"] == 42.0
+         assert result["max_val"] == 42.0
+         assert result["stddev"] is None  # STDDEV_SAMP of single value
++        assert result["histogram"] == {
++            "bins": [42.0, 42.0],
++            "counts": [1],
++            "bin_width": 0.0,
++        }
+ 
+     def test_numeric_large_dataset_percentiles(self):
+         from feast.infra.offline_stores.dask import _dask_compute_numeric_metrics
+@@ -2228,3 +2233,39 @@ class TestCrossBackendConsistency:
+         assert pyarrow_result["null_rate"] == pytest.approx(0.5, abs=1e-6)
+         assert dask_result["null_rate"] == pytest.approx(0.5, abs=1e-6)
+         assert duckdb_results[0]["null_rate"] == pytest.approx(0.5, abs=1e-6)
++
++    @pytest.mark.parametrize(
++        "values",
++        [
++            pytest.param(NUMERIC_VALUES, id="golden"),
++            pytest.param([7.0] * 8 + [None] * 2, id="constant"),
++        ],
++    )
++    def test_numeric_histogram_matches_across_backends(self, values):
++        duckdb = pytest.importorskip("duckdb")
++        from feast.infra.offline_stores.dask import _dask_compute_numeric_metrics
++        from feast.infra.offline_stores.duckdb import _duckdb_numeric_stats
++        from feast.monitoring.metrics_calculator import MetricsCalculator
++
++        arr = pa.array(values, type=pa.float64())
++        pyarrow_hist = MetricsCalculator(histogram_bins=5).compute_numeric(arr)[
++            "histogram"
++        ]
++        dask_hist = _dask_compute_numeric_metrics(
++            pa.chunked_array([arr]), histogram_bins=5
++        )["histogram"]
++
++        conn = duckdb.connect()
++        conn.execute("CREATE TABLE hist_consistency (v DOUBLE)")
++        conn.executemany(
++            "INSERT INTO hist_consistency VALUES (?)", [[v] for v in values]
++        )
++        duckdb_hist = _duckdb_numeric_stats(
++            conn, "hist_consistency", ["v"], "1=1", histogram_bins=5
++        )[0]["histogram"]
++        conn.close()
++
++        for hist in (pyarrow_hist, dask_hist):
++            assert hist["counts"] == duckdb_hist["counts"]
++            assert hist["bins"] == pytest.approx(duckdb_hist["bins"])
++            assert hist["bin_width"] == pytest.approx(duckdb_hist["bin_width"])
+diff --git a/sdk/python/tests/unit/monitoring/test_metrics_calculator.py b/sdk/python/tests/unit/monitoring/test_metrics_calculator.py
+index 8124531..fdcb59a 100644
+--- a/sdk/python/tests/unit/monitoring/test_metrics_calculator.py
++++ b/sdk/python/tests/unit/monitoring/test_metrics_calculator.py
+@@ -85,6 +85,22 @@ class TestComputeNumeric:
+         assert result["min_val"] == 42.0
+         assert result["max_val"] == 42.0
+         assert result["stddev"] is None  # STDDEV_SAMP of 1 value is NaN → None
++        assert result["histogram"] == {
++            "bins": [42.0, 42.0],
++            "counts": [1],
++            "bin_width": 0.0,
++        }
++
++    def test_constant_column_histogram_is_single_zero_width_bin(self):
++        calc = _make_calc()
++        arr = pa.array([7.0] * 25 + [None] * 5)
++        result = calc.compute_numeric(arr)
++
++        assert result["histogram"] == {
++            "bins": [7.0, 7.0],
++            "counts": [25],
++            "bin_width": 0.0,
++        }
+ 
+     def test_histogram_bin_count(self):
+         calc = _make_calc(bins=5)

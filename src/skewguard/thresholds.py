@@ -69,16 +69,21 @@ def sample_histogram(
     return lo + (hi - lo) * rng.random(n)
 
 
-@lru_cache(maxsize=4096)
-def _numeric_null(
-    edges: tuple[float, ...],
-    counts: tuple[float, ...],
+def simulate_reference(
+    edges: Sequence[float],
+    counts: Sequence[float],
     n_baseline: int,
     n_window: int,
     reps: int,
     seed: int,
-    bins: int,
-) -> tuple[NullDistribution, NullDistribution]:
+    bins: int = 20,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Straightforward no-drift simulation: draw every value, histogram, compare.
+
+    Costs O(reps * n) and runs in a Python loop. ``_numeric_null`` uses
+    ``sample_own_histograms`` instead; this version is the reference it is
+    tested against.
+    """
     rng = np.random.default_rng(seed)
     point_style = is_point_style(edges)
     psis, jss = [], []
@@ -90,6 +95,152 @@ def _numeric_null(
         p, j, _ = compare_numeric(be, bc, we, wc)
         psis.append(p)
         jss.append(j)
+    return np.asarray(psis), np.asarray(jss)
+
+
+def sample_own_histograms(
+    edges: Sequence[float],
+    counts: Sequence[float],
+    n: int,
+    reps: int,
+    rng: np.random.Generator,
+    bins: int = 20,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Draw ``reps`` samples of ``n`` values and return the ``numpy.histogram`` of each.
+
+    Same distribution as ``feast_histogram(sample_histogram(...))``, but without
+    materialising the ``n`` values, so the cost is O(reps * bins^2) for any ``n``:
+
+    1. Split ``n`` across the source bins (multinomial).
+    2. Draw the sample minimum from the first occupied bin and the maximum from
+       the last (order statistics of uniforms: ``1 - U**(1/c)`` and ``U**(1/c)``).
+       These fix the sample's own edges, ``linspace(min, max, bins + 1)``.
+    3. Every other value is uniform on its source bin, clipped to ``[min, max]``,
+       so its own-bin counts are multinomial in the overlap fractions.
+
+    Returns ``(own_edges, own_counts)`` with shapes ``(reps, bins + 1)`` and
+    ``(reps, bins)``.
+    """
+    e = np.asarray(edges, dtype=float)
+    p = np.asarray(counts, dtype=float)
+    p = p / p.sum()
+    a, b = e[:-1], e[1:]
+    rows = np.arange(reps)
+
+    c = rng.multinomial(n, p, size=reps)  # (reps, B) values per source bin
+    occupied = c > 0
+    first = occupied.argmax(axis=1)
+    last = len(p) - 1 - occupied[:, ::-1].argmax(axis=1)
+    same = first == last
+
+    c_first = c[rows, first]
+    vmin = a[first] + (b[first] - a[first]) * (1 - rng.random(reps) ** (1 / c_first))
+    # The maximum is the largest of the other values in the last occupied bin.
+    m_last = np.where(same, c_first - 1, c[rows, last])
+    has_max = m_last > 0
+    lo_last = np.where(same, vmin, a[last])
+    u_max = rng.random(reps) ** (1 / np.maximum(m_last, 1))
+    vmax = np.where(has_max, lo_last + (b[last] - lo_last) * u_max, vmin)
+
+    # Each source bin's remaining values, and the interval they are uniform on.
+    is_first = np.arange(len(p))[None, :] == first[:, None]
+    is_last = np.arange(len(p))[None, :] == last[:, None]
+    remaining = c - is_first - (is_last & has_max[:, None])
+    lo = np.where(is_first, vmin[:, None], a[None, :])
+    hi = np.where(is_last, vmax[:, None], b[None, :])
+
+    # numpy.histogram widens a zero-width range to [v - 0.5, v + 0.5].
+    flat = vmin == vmax
+    own_lo, own_hi = np.where(flat, vmin - 0.5, vmin), np.where(flat, vmax + 0.5, vmax)
+    own = np.linspace(own_lo, own_hi, bins + 1, axis=1)  # (reps, bins + 1)
+
+    width = hi - lo
+    right = np.minimum(hi[:, :, None], own[:, None, 1:])
+    left = np.maximum(lo[:, :, None], own[:, None, :-1])
+    overlap = np.clip(right - left, 0.0, None)  # (reps, source bin, own bin)
+    probs = np.where(
+        width[:, :, None] > 0, overlap / np.where(width > 0, width, 1.0)[:, :, None], 0.0
+    )
+    # Degenerate intervals (zero width or no remaining values): put any mass in
+    # the bin holding ``lo`` so every probability vector sums to one.
+    holder = np.clip(((lo - own_lo[:, None]) / (own_hi - own_lo)[:, None] * bins), 0, bins - 1)
+    degenerate = probs.sum(axis=2) <= 0
+    probs[degenerate] = 0.0
+    r_idx, j_idx = np.nonzero(degenerate)
+    probs[r_idx, j_idx, holder[r_idx, j_idx].astype(int)] = 1.0
+    probs /= probs.sum(axis=2, keepdims=True)
+
+    own_counts = rng.multinomial(remaining, probs).sum(axis=1).astype(float)
+    own_counts[:, 0] += 1  # the minimum sits on the first edge
+    own_counts[rows[has_max], bins - 1] += 1  # the maximum on the last (closed) edge
+    single = ~has_max & flat  # n == 1: numpy puts the value in the middle bin
+    own_counts[single] = 0.0
+    own_counts[single, bins // 2] = 1.0
+    return own, own_counts
+
+
+def compare_batch(
+    base_edges: np.ndarray,
+    base_counts: np.ndarray,
+    win_edges: np.ndarray,
+    win_counts: np.ndarray,
+    eps: float = 1e-4,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Row-wise ``stats.compare_numeric`` for non-degenerate histograms: ``(psi, js)``.
+
+    Every source bin must have positive width, which always holds for
+    ``numpy.histogram`` output.
+    """
+    sa, sb = win_edges[:, :-1, None], win_edges[:, 1:, None]
+    dl, dr = base_edges[:, None, :-1], base_edges[:, None, 1:]
+    share = np.clip(np.minimum(sb, dr) - np.maximum(sa, dl), 0.0, None) / (sb - sa)
+    moved = np.einsum("rs,rsd->rd", win_counts, share)
+    lo, hi = base_edges[:, :1, None], base_edges[:, -1:, None]
+    w = win_counts[:, :, None]
+    below = (w * np.clip(np.minimum(sb, lo) - sa, 0.0, None) / (sb - sa)).sum(axis=(1, 2))
+    above = (w * np.clip(sb - np.maximum(sa, hi), 0.0, None) / (sb - sa)).sum(axis=(1, 2))
+
+    zeros = np.zeros((len(base_counts), 1))
+    expected = np.hstack([zeros, base_counts, zeros])
+    actual = np.hstack([below[:, None], moved, above[:, None]])
+    pe = expected / expected.sum(axis=1, keepdims=True)
+    pa = actual / actual.sum(axis=1, keepdims=True)
+
+    fe, fa = np.maximum(pe, eps), np.maximum(pa, eps)
+    psi_values = ((fa - fe) * np.log(fa / fe)).sum(axis=1)
+
+    m = (pe + pa) / 2
+    with np.errstate(divide="ignore", invalid="ignore"):
+        kl_e = np.where(pe > 0, pe * np.log2(pe / m), 0.0).sum(axis=1)
+        kl_a = np.where(pa > 0, pa * np.log2(pa / m), 0.0).sum(axis=1)
+    js_values = np.clip(0.5 * kl_e + 0.5 * kl_a, 0.0, 1.0)
+    return psi_values, js_values
+
+
+@lru_cache(maxsize=4096)
+def _numeric_null(
+    edges: tuple[float, ...],
+    counts: tuple[float, ...],
+    n_baseline: int,
+    n_window: int,
+    reps: int,
+    seed: int,
+    bins: int,
+) -> tuple[NullDistribution, NullDistribution]:
+    if is_point_style(edges):
+        # A constant baseline resamples to the same constant: every draw is identical.
+        zeros = (0.0,) * reps
+        return NullDistribution(zeros), NullDistribution(zeros)
+    rng = np.random.default_rng(seed)
+    psis, jss = [], []
+    chunk = 2000  # bounds memory at ~chunk * bins^2 floats
+    for start in range(0, reps, chunk):
+        size = min(chunk, reps - start)
+        be, bc = sample_own_histograms(edges, counts, n_baseline, size, rng, bins)
+        we, wc = sample_own_histograms(edges, counts, n_window, size, rng, bins)
+        p, j = compare_batch(be, bc, we, wc)
+        psis.extend(p.tolist())
+        jss.extend(j.tolist())
     return NullDistribution(tuple(psis)), NullDistribution(tuple(jss))
 
 
