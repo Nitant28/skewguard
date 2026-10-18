@@ -1,0 +1,15 @@
+# skewguard policy. Keys under `features` are a feature view name, or
+# `<feature_view>.<feature>`; a feature inherits its view's settings, which
+# inherit `default`.
+default:
+  false_positive_rate: 0.01   # per check, on clean data
+  statistic: psi              # or js
+  min_rows: 30                # skip distribution checks on smaller windows
+  max_unseen_mass: 0.01       # share outside baseline range / new categories
+  max_staleness: 26h          # newest event older than this alerts
+
+features:
+  driver_hourly_stats:
+    max_staleness: 2h
+  driver_hourly_stats.avg_daily_trips:
+    min_rows: 100

@@ -1,0 +1,37 @@
+[project]
+name = "skewguard"
+version = "0.1.0.dev0"
+description = "Training-serving skew and freshness detection over Feast data-quality monitoring metrics."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.24"]
+
+[project.optional-dependencies]
+feast = ["feast==0.67.0"]
+dev = ["pytest>=8", "hypothesis>=6.100", "ruff>=0.6", "pyyaml>=6"]
+
+[project.scripts]
+skewguard = "skewguard.cli:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+markers = ["integration: runs feast init/apply/monitor; needs the feast extra (slow)"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+# zip(edges, edges[1:]) pairs sequences of different lengths on purpose;
+# equal-length inputs are validated explicitly before zipping.
+ignore = ["B905"]
