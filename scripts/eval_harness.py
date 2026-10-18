@@ -75,9 +75,13 @@ WINDOW_SIZES = (100, 300, 1000, 5000)
 DAYS_PER_CELL = 30
 GRADUAL_HORIZON = 14  # days a gradual shift is followed after its onset
 
-DETECTORS = ("none", "null_rule", "fixed", "skewguard")
+DETECTORS = ("none", "null_rule", "fixed", "skewguard", "skewguard_bonf")
 NULL_RULE_POINTS = 0.10
 FIXED_PSI, FIXED_LINF = 0.25, 0.10
+# "skewguard" with alpha split over the day's 10 alpha-controlled checks
+# (PSI or L-inf, and null rate, for each of the 5 features). The 0.999 quantile
+# needs more null draws than the default 1,000 to be estimated stably.
+BONF_ALPHA, BONF_REPS = 0.01 / 10, 10_000
 CLEAN = "none"
 
 FEATURE_STORE_YAML = f"""\
@@ -400,6 +404,9 @@ def policies(min_rows: int, max_unseen_mass: float) -> dict[str, PolicySet]:
             overrides={f"{FV}.{c}": fixed_cat for c in CATEGORICAL},
         ),
         "skewguard": PolicySet(default=Policy(**common)),
+        "skewguard_bonf": PolicySet(
+            default=Policy(false_positive_rate=BONF_ALPHA, reps=BONF_REPS, **common)
+        ),
     }
 
 
@@ -665,6 +672,8 @@ def run(args: argparse.Namespace) -> None:
         "null_rule_points": NULL_RULE_POINTS,
         "fixed_psi": FIXED_PSI,
         "fixed_linf": FIXED_LINF,
+        "bonferroni_alpha": BONF_ALPHA,
+        "bonferroni_reps": BONF_REPS,
         "freshness_stamp": "source_max",  # see stamp_newest_event
     }
     digest = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()[:12]

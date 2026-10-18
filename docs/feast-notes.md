@@ -130,6 +130,18 @@ metrics from `auto_compute`, or track the newest event themselves. Code review o
 the week-2 evaluation harness found that it hit exactly this, before any detection
 numbers existed.
 
+**F9. Monitoring can't see a numeric feature arriving as strings.** Feast picks
+numeric or categorical from the feature view's *declared* dtype
+(`monitoring_service.py:867-895`), then the numeric path casts the column to
+float64 (`dask.py` `_dask_compute_numeric_metrics`,
+`metrics_calculator.py:97`). A producer that starts writing `"1.5"` instead of
+`1.5` therefore produces the same metrics as before. Checked on 0.67.0: the
+column `["1.5", "2.0", "3.25", null]` gives row_count 4, null_count 1, mean 2.25,
+min 1.5, max 3.25, exactly as the floats would. A non-numeric string makes the
+cast fail instead. → Type drift needs a schema check on the source (arrow type
+vs declared dtype), not a distribution check. A small, concrete idea for upstream:
+record the source's arrow type in each metrics row.
+
 ## 4. Retrieval paths (needed to reason about skew)
 
 **`FeatureStore.get_historical_features`** (`feature_store.py:1988`) → `PassthroughProvider`

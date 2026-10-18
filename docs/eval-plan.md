@@ -150,3 +150,70 @@ Code: `src/skewguard/inject.py`, `scripts/eval_harness.py`.
    evaluated day. Feast's own stamp is kept as `feast_newest_event`. This
    changes nothing on a day that has events. A first March smoke run made before
    the fix was stopped and discarded.
+10. **Analysis and tuning rules, fixed before any March detection value was read
+    (2026-10-19).** The March run had been checked only for completeness and row
+    counts. Code: `scripts/analyze.py`.
+    - **Tuning `max_unseen_mass`.** Candidates: 0.001, 0.002, 0.005, 0.01, 0.02,
+      0.05. The stored `out_of_range` and `new_categories` values of detector
+      `skewguard` on March clean days are re-thresholded at each candidate. The
+      choice is the smallest candidate whose per-check clean alert rate is at most
+      1% at every window size; if none qualifies, 0.05. Detectors 3 and 4 use the
+      same value.
+    - **`min_rows` is not tuned.** It stays at 30. Every planned window samples
+      at least 100 rows, so only null bursts can push non-null rows below 30, and
+      the null-rate check covers those.
+    - **Matched-FPR detector 3.** For each window size, both fixed thresholds
+      (PSI 0.25, L-inf 0.10) are multiplied by one factor k in 0.10, 0.11, ...,
+      5.00. The stored `psi` / `linf` values of detector `fixed` on March clean
+      days are re-thresholded; every other check keeps its stored status. The
+      choice is the k whose day-level clean FPR is closest to detector 4's March
+      day-level clean FPR (ties go to the larger k). That k is applied unchanged
+      to the evaluation rows and reported as `fixed_matched`.
+    - **Day-level FPR** (primary): the share of clean days on which a detector
+      alerts on any feature (`alert`). **Per-check FPR**: the share of clean
+      feature-windows on which one check alerts. H2 is tested on the `psi` check
+      of detector 3 over the three numeric features at window size 100, the only
+      planned size of 150 rows or fewer.
+    - **Detection** (primary, as planned): an incident is detected if `alert` is
+      true on any of its evaluated days. Secondary, for faults with a target
+      feature: `target_alert` (the alert names the injected feature).
+    - **Intervals and tests.**
+      - Detection-rate intervals: percentile bootstrap over the incidents of a
+        cell, 10,000 resamples, seed 0.
+      - H1, per window size, pooled over faults x severities and paired on
+        identical incidents: exact McNemar (two-sided binomial on discordant
+        pairs) for detector 4 vs detector 3 and vs `fixed_matched`,
+        Holm-corrected across the 4 window sizes.
+      - Difference intervals: paired bootstrap of detector 4 minus detector 3,
+        resampling incidents within each fault x severity.
+      - The gradual-shift sub-claim uses the same paired comparison, restricted
+        to `gradual_shift` at 1,000 and 5,000 rows.
+    - **Time to detect** (gradual shift, stale source): the first `day_offset`
+      with an alert. Reported as the detected share, plus the median over
+      detected incidents.
+    - Rows with `feast_status` other than `ok` are excluded and counted.
+      Runtime p50/p99 is per feature, split into cold (`null_cache_misses > 0`)
+      and warm.
+    - **Bonferroni.** The workload has 5 features (the limitation above assumed
+      20). Per day there are 10 alpha-controlled tests: PSI-or-L-inf plus null
+      rate, per feature. Detector `skewguard_bonf` is detector 4 with
+      `false_positive_rate = 0.001`, and it runs in the evaluation range
+      alongside the others. It uses 10,000 null draws instead of 1,000: at
+      1,000 draws, the 0.999 quantile falls between the two largest draws and
+      is too noisy to estimate.
+11. **Blind spots expected by construction, recorded before any detection value
+    was read (2026-10-19).** These will be reported as found, not worked around.
+    - **Type change.** Feast's numeric metric path casts a numeric feature's
+      column to float64 (`dask.py` `_dask_compute_numeric_metrics`). Numeric
+      strings such as `"1.5"` therefore produce the same metrics as the clean
+      column; this was checked directly on Feast 0.67.0. Expected detection is
+      close to the clean false-positive rate. Non-numeric strings would make the
+      cast fail instead, but they are not injected.
+    - **New value in `PULocationID`.** The baseline keeps only the top 10 values
+      plus an `other` bucket, so `new_categories` can't prove a value is new and
+      reports 0. Only `linf` can react, and only once the new value reaches the
+      window's top 10. `payment_type` lists every value, so both checks apply
+      to it.
+    - **Stale source on its onset day.** The newest event is less than one day
+      old at the next midnight, so freshness can't exceed the 1-day TTL. Only the
+      later days of an outage can trip it.

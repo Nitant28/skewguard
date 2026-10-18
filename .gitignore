@@ -8,3 +8,5 @@ dist/
 .hypothesis/
 .ruff_cache/
 data/
+# per-cell harness output; the combined results/<run>.parquet is committed
+results/*/

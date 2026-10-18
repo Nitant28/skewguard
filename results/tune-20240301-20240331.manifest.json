@@ -1,0 +1,50 @@
+{
+  "config": {
+    "range": [
+      "2024-03-01",
+      "2024-03-31"
+    ],
+    "baseline": [
+      "2024-01-01",
+      "2024-02-29"
+    ],
+    "sizes": [
+      100,
+      300,
+      1000,
+      5000
+    ],
+    "faults": [
+      "unit_change",
+      "null_burst",
+      "stale_source",
+      "new_category",
+      "timezone_shift",
+      "gradual_shift",
+      "type_change"
+    ],
+    "detectors": [
+      "none",
+      "null_rule",
+      "fixed",
+      "skewguard"
+    ],
+    "seed": 20261018,
+    "days_per_cell": 30,
+    "gradual_horizon_days": 14,
+    "ttl_seconds": 86400.0,
+    "min_rows": 30,
+    "max_unseen_mass": 0.01,
+    "null_rule_points": 0.1,
+    "fixed_psi": 0.25,
+    "fixed_linf": 0.1,
+    "freshness_stamp": "source_max"
+  },
+  "config_digest": "0ed286f42222",
+  "started_at": "2026-10-18T20:16:45.362867+00:00",
+  "git_head": "c8695e3af397922a117077901f75996d6df386e9",
+  "git_dirty": true,
+  "plan_commit": "0393d31af0470bf060216e965a7e79f4cff4ad56",
+  "feast_version": "0.67.0",
+  "python": "3.12.13"
+}

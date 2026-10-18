@@ -8,12 +8,14 @@ categories and stale data. Its thresholds are **calibrated to each window's samp
 size**: a fixed rule like PSI > 0.25 fires on 8.6% of clean 116-row windows, yet at
 1,000+ rows it is more than five times the clean-data 95th percentile. skewguard's
 simulated thresholds hold the false-positive rate at its 1% target (measured
-0.5–1.2%) from 116 to 5,000 rows.
+0.4–1.1%) from 116 to 5,000 rows.
 
-> **Status:** early (week 1). The detector, its tests and the clean-data
-> calibration are done. Detection power on injected faults hasn't been measured
-> yet; it will be measured under the pre-registered plan in
-> [docs/eval-plan.md](docs/eval-plan.md).
+> **Status:** early (week 2). The detector, its tests and the clean-data
+> calibration are done. The labelled fault injector (`skewguard.inject`) and the
+> evaluation harness (`scripts/eval_harness.py`) exist, and the harness has run end
+> to end on the March 2024 tuning range. Detection power on injected faults hasn't
+> been measured yet. It will be measured on April–June 2024 under the
+> pre-registered plan in [docs/eval-plan.md](docs/eval-plan.md).
 
 ## Quick start
 
@@ -78,9 +80,9 @@ From [docs/noise_floor_output.md](docs/noise_floor_output.md) (`python scripts/n
 
 | window rows | median PSI | P(PSI > 0.2) | P(PSI > 0.25) | simulated limit | its false-positive rate |
 |---|---|---|---|---|---|
-| 116 | 0.153 | 23.2% | 8.6% | 0.392 | 1.2% |
-| 1,000 | 0.029 | 0.0% | 0.0% | 0.057 | 1.2% |
-| 5,000 | 0.015 | 0.0% | 0.0% | 0.030 | 0.5% |
+| 116 | 0.153 | 23.2% | 8.6% | 0.388 | 1.0% |
+| 1,000 | 0.029 | 0.0% | 0.0% | 0.057 | 1.1% |
+| 5,000 | 0.015 | 0.0% | 0.0% | 0.030 | 0.4% |
 
 The target false-positive rate was 1%. Each column is measured on 2,000 independent
 pairs from one distribution, with a 1,808-row baseline as in the Feast demo.
@@ -95,16 +97,40 @@ src/skewguard/
   policy.py         per-view / per-feature YAML policies
   feast_adapter.py  the only module that imports Feast
   cli.py            `skewguard check`
-scripts/            noise_floor.py, repro_stale_online_read.py
-docs/               feast-notes.md, eval-plan.md
+  inject.py         labelled faults for the evaluation                (pandas)
+scripts/            eval_harness.py, analyze.py, noise_floor.py,
+                    repro_stale_online_read.py, repro_backend_histograms.py
+docs/               feast-notes.md, eval-plan.md, upstream/ (Feast issue + patch drafts)
+results/            <run>.parquet, run summaries, tuning and RESULTS files
 ```
 
 ## Development
 
 ```bash
+pip install -e ".[feast,dev,eval]"
 pytest -m "not integration"   # fast unit + property tests
 pytest -m integration         # runs feast init/apply/monitor in a temp dir (~2 min)
 ruff check . && ruff format --check .
+```
+
+The evaluation harness downloads NYC TLC trip data into `data/` (gitignored), builds
+a Feast repo with a January–February baseline, and writes `results/<run>.parquet`.
+The evaluation range (April–June) is refused unless `--final` is passed.
+
+```bash
+python scripts/eval_harness.py download 2024-01 2024-02 2024-03
+python scripts/eval_harness.py run --range tune   # March, ~25 min; resumable
+```
+
+`scripts/analyze.py` applies the analysis rules fixed in the plan's Deviation 10
+before any March detection value was read. `tune` picks `max_unseen_mass` and the
+matched fixed thresholds from March; `report` writes the results tables,
+intervals and tests for an evaluation run:
+
+```bash
+python scripts/analyze.py tune results/tune-20240301-20240331.parquet
+python scripts/analyze.py report results/<eval-run>.parquet \
+    --tuning results/tune-20240301-20240331.tuning.json
 ```
 
 ## Limitations

@@ -1,5 +1,6 @@
 """scripts/eval_harness.py: schedule, storage and guards; one synthetic end-to-end run."""
 
+import dataclasses
 import importlib.util
 import json
 import sys
@@ -133,6 +134,13 @@ def test_run_refuses_evaluation_and_baseline_dates(h, argv, tmp_path, monkeypatc
     assert not (tmp_path / "results").exists()
 
 
+def test_bonferroni_detector_differs_from_skewguard_only_in_alpha(h):
+    sets = h.policies(min_rows=30, max_unseen_mass=0.01)
+    plain, bonf = sets["skewguard"].default, sets["skewguard_bonf"].default
+    assert bonf.false_positive_rate == pytest.approx(plain.false_positive_rate / 10)
+    assert dataclasses.replace(bonf, false_positive_rate=0.01, reps=plain.reps) == plain
+
+
 def test_windows_are_stamped_with_the_source_newest_event(h):
     windows = {f: {"max_event_timestamp": None, "row_count": 0} for f in h.FEATURES}
     newest = pd.Timestamp("2024-03-01 11:00", tz="UTC")
@@ -163,10 +171,11 @@ def test_synthetic_run_end_to_end_and_resume(h, tmp_path, monkeypatch, capsys):
     out = pd.read_parquet(tmp_path / "results" / "custom-20240301-20240304.parquet")
 
     assert set(out["detector"]) == set(h.DETECTORS)
-    assert (out.groupby(["fault", "severity", "day", "incident"]).size() == 4).all()
+    per_window = out.groupby(["fault", "severity", "day", "incident"]).size()
+    assert (per_window == len(h.DETECTORS)).all()
     assert (out["feast_status"] == "ok").all()
     clean = out[out["fault"] == "none"]
-    assert len(clean) == 4 * 4 and (clean["rows_window"] == 300).all()
+    assert len(clean) == 4 * len(h.DETECTORS) and (clean["rows_window"] == 300).all()
     assert not out.loc[out["detector"] == "none", "alert"].any()
 
     sg = out[out["detector"] == "skewguard"]
